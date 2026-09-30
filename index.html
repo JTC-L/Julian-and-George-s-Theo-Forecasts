@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Order book replay (set 1)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f2f5f7;
+    --panel: #ffffff;
+    --ink: #14202b;
+    --muted: #5b6a79;
+    --line: #dbe2e8;
+    --bid: #178a4b;
+    --ask: #d0382e;
+    --theo: #6a4bc4;
+    --accent: #14202b;
+    --tab-active-bg: #14202b;
+    --tab-active-ink: #ffffff;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e141a; --panel: #151d25; --ink: #e5ecf2; --muted: #92a0ae; --line: #26313c;
+      --bid: #4fcb84; --ask: #f2766b; --theo: #a898f2; --accent: #e5ecf2; --tab-active-bg: #e5ecf2; --tab-active-ink: #0e141a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e141a; --panel: #151d25; --ink: #e5ecf2; --muted: #92a0ae; --line: #26313c;
+    --bid: #4fcb84; --ask: #f2766b; --theo: #a898f2; --accent: #e5ecf2; --tab-active-bg: #e5ecf2; --tab-active-ink: #0e141a;
+  }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px; line-height: 1.45; font-variant-numeric: tabular-nums;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+
+  .tabbar { display: flex; align-items: stretch; gap: 8px; margin-bottom: 14px; }
+  .tabs { display: flex; gap: 4px; overflow-x: auto; flex: 1; padding-bottom: 4px; scrollbar-width: thin; }
+  .tab {
+    flex: 0 0 auto; min-width: 64px; padding: 6px 10px; text-align: center; cursor: pointer;
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
+    font: inherit; line-height: 1.25;
+  }
+  .tab .id { display: block; font-weight: 600; }
+  .tab .tm { display: block; font-size: 11px; color: var(--muted); }
+  .tab[aria-selected="true"] { background: var(--tab-active-bg); color: var(--tab-active-ink); border-color: var(--tab-active-bg); }
+  .tab[aria-selected="true"] .tm { color: inherit; opacity: .75; }
+  .tab:focus-visible, .step:focus-visible { outline: 2px solid var(--bid); outline-offset: 2px; }
+  .step {
+    flex: 0 0 auto; width: 38px; background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; cursor: pointer; font: inherit; font-size: 16px;
+  }
+  .step:disabled { opacity: .35; cursor: default; }
+
+  .grid { display: grid; grid-template-columns: minmax(290px, 380px) minmax(0, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px 16px; }
+  .panel h2 { font-size: 15px; font-weight: 600; margin: 0 0 10px; }
+  .panel h3 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; }
+
+  /* order book ladder */
+  .lvl, .lvl-head {
+    display: grid; grid-template-columns: 1fr 1fr 1fr 46px; align-items: center; gap: 6px;
+    padding: 0 10px; position: relative;
+  }
+  .lvl-head { color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  .lvl-head span:nth-child(n+2), .lvl span:nth-child(n+2) { text-align: right; }
+  .lvl { height: 32px; margin-top: 2px; border-radius: 3px; isolation: isolate; font-size: 14px; }
+  .lvl::before { content: ""; position: absolute; top: 0; bottom: 0; right: 0; width: var(--w); z-index: -1; border-radius: 3px; }
+  .lvl.ask::before { background: color-mix(in srgb, var(--ask) 24%, transparent); border-left: 2px solid var(--ask); }
+  .lvl.bid::before { background: color-mix(in srgb, var(--bid) 24%, transparent); border-left: 2px solid var(--bid); }
+  .lvl .px { font-weight: 600; }
+  .lvl.ask .px { color: var(--ask); }
+  .lvl.bid .px { color: var(--bid); }
+  .lvl .age { color: var(--muted); font-size: 12px; }
+  .lvl .age.fresh { color: var(--ink); font-weight: 600; }
+  .lvl .age.fresh::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 4px; vertical-align: 1px; }
+  .spread {
+    display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; margin: 8px 0 6px;
+    border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); color: var(--muted); font-size: 12.5px;
+  }
+  .spread b { color: var(--ink); font-weight: 600; }
+  .sides { display: grid; gap: 2px; color: var(--muted); font-size: 12.5px; padding: 10px 10px 0; }
+  .sides b { color: var(--ink); font-weight: 600; }
+  .pairs { margin: 10px 10px 0; font-size: 12.5px; color: var(--ink); }
+  .pairs > div { display: grid; grid-template-columns: 1.6fr 1fr 0.8fr; gap: 6px; padding: 2px 0; }
+  .pairs > div span:nth-child(n+2) { text-align: right; }
+  .pairs .ph { color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); padding-bottom: 4px; margin-bottom: 2px; }
+  .note { color: var(--muted); font-size: 12px; margin: 12px 0 0; }
+  .toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); margin: -2px 0 10px; cursor: pointer; }
+  .toggle input { accent-color: var(--theo); width: 15px; height: 15px; margin: 0; }
+
+  /* chart */
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .sw-line { width: 18px; height: 0; border-top: 2px solid; display: inline-block; }
+  .sw-dash { width: 18px; height: 0; border-top: 2px dashed; display: inline-block; }
+  #chart { width: 100%; }
+  #chart svg { display: block; width: 100%; cursor: crosshair; }
+  #chart text { font-family: inherit; font-size: 11px; fill: var(--muted); }
+  #chart .cur-label { fill: var(--tab-active-ink); font-weight: 600; }
+  .stats { display: flex; flex-wrap: wrap; gap: 4px 22px; margin: 8px 0 0; color: var(--muted); font-size: 12.5px; }
+  .stats b { color: var(--ink); font-weight: 600; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  tr:last-child td { border-bottom: 0; }
+  th.n, td.n { text-align: right; }
+  .buy { color: var(--bid); font-weight: 600; }
+  .sell { color: var(--ask); font-weight: 600; }
+  .table-scroll { overflow-x: auto; }
+  .empty { color: var(--muted); margin: 0; }
+  .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; align-items: start; }
+  @media (max-width: 860px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+  .mini { width: 100%; }
+  .mini svg { display: block; width: 100%; }
+  .mini text { font-family: inherit; font-size: 11px; fill: var(--muted); }
+  .scroll-y { max-height: 250px; overflow: auto; margin-top: 10px; }
+  .scroll-y th { position: sticky; top: 0; background: var(--panel); }
+  tr.cur td { background: color-mix(in srgb, var(--theo) 12%, transparent); }
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .seg button { font: inherit; font-size: 12.5px; padding: 5px 10px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--tab-active-bg); color: var(--tab-active-ink); border-color: var(--tab-active-bg); }
+  .seg button:focus-visible { outline: 2px solid var(--bid); outline-offset: 2px; }
+  #pred-summary { margin-top: 10px; }
+  tr.sel td { background: color-mix(in srgb, var(--theo) 12%, transparent); }
+  .trig { display: flex; gap: 10px; align-items: baseline; margin: 0 0 10px; }
+  .badge { flex: 0 0 auto; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 10px; color: #fff; }
+  .badge.buy { background: var(--bid); }
+  .badge.sell { background: var(--ask); }
+  .badge.hold { background: var(--muted); }
+  :root[data-theme="dark"] .badge { color: #0e141a; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .badge { color: #0e141a; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Order book replay (set 1)</h1>
+  <p class="sub" id="sub"></p>
+
+  <div class="tabbar">
+    <button class="step" id="prev" aria-label="Previous timestamp">&#8249;</button>
+    <div class="tabs" id="tabs" role="tablist" aria-label="Timestamps"></div>
+    <button class="step" id="next" aria-label="Next timestamp">&#8250;</button>
+  </div>
+
+  <div class="grid">
+    <section class="panel" aria-labelledby="book-title">
+      <h2 id="book-title"></h2>
+      <label class="toggle"><input type="checkbox" id="inc" checked> Count the last trade in the theo</label>
+      <div id="book"></div>
+      <p class="note">Bar width is cumulative size from the best price outward (the Total column), scaled to the larger side. Age is the age_s value from the book file; a dot marks a level with age 0. Hover a level to see its weight, which is size &times; 2<sup>&minus;(% from mid)</sup> &times; e<sup>&minus;(k&middot;age)&sup2;</sup>.</p>
+      <p class="note"><b>Book theo.</b> Every price is multiplied by the total weight of the opposite side. With bids 8.30, 8.35, 8.40 and asks 8.45, 8.50, 8.55, each of 8.45, 8.50 and 8.55 is multiplied by (weight of 8.30 + weight of 8.35 + weight of 8.40), and each of 8.30, 8.35 and 8.40 by (weight of 8.45 + weight of 8.50 + weight of 8.55). The theo is the sum of all those products divided by the sum of the multipliers used. Level weight = size &times; 2<sup>&minus;(% from mid)</sup> &times; e<sup>&minus;(k&middot;age)&sup2;</sup>, with k = 1/(40&radic;2), so the time weight's inflection is at 40 s. A level's own weight therefore only matters through its side's total, and each price counts equally. With one level each side and no decay this is the 99 / 101 example.</p>
+      <p class="note"><b>Last trade in the theo.</b> This is a modelling step, not part of the book: a trade is a price taken, not a market inserted, so the ladder above always shows the book as given. When the switch is on, the theo counts the most recent trade printed by the selected snapshot as one more order on the aggressor's side: a buy counts with the bids and a sell with the asks. It is treated as 0 seconds old, so its time weight is 1, and its price is taken as midway between the price they traded at and the next level in the direction they traded. For a buy that is the next ask above, and for a sell the next bid below, read from the selected snapshot's book (one tick further out if the visible book has no such level). It adds to a level's weight if one sits at that price, otherwise it counts as an extra price on that side. Either way its weight, size &times; 2<sup>&minus;(% from mid)</sup>, goes into that side's total. Mid, spread, the distance weights and the prices traded in the simulation all use the book as given. Switch it off to see the theo without it.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="chart-title">
+      <h2 id="chart-title">Trading history up to this point</h2>
+      <div class="legend">
+        <span><i class="sw-dot" style="background:var(--bid)"></i>Aggressor bought</span>
+        <span><i class="sw-dot" style="background:var(--ask)"></i>Aggressor sold</span>
+        <span><i class="sw-line" style="color:var(--bid)"></i>Best bid</span>
+        <span><i class="sw-line" style="color:var(--ask)"></i>Best ask</span>
+        <span><i class="sw-line" style="color:var(--theo)"></i>Book theo</span>
+        <span>Circle area = quantity</span>
+      </div>
+      <div id="chart"></div>
+      <div class="stats" id="stats"></div>
+
+      <h3 id="tr-title"></h3>
+      <div id="tr"></div>
+      <p class="note">The trade file only gives the interval between two snapshots, so trades are spaced evenly inside their interval in sequence order. Click the chart to jump to the nearest snapshot.</p>
+    </section>
+  </div>
+
+  <div class="grid2">
+    <section class="panel" aria-labelledby="pred-title">
+      <h2 id="pred-title">Prediction: earlier theos vs mid now</h2>
+      <div class="seg" id="lagbar" role="group" aria-label="Look back">
+        <button type="button" data-lag="1" aria-pressed="true">Theo at Tn&minus;1</button>
+        <button type="button" data-lag="2" aria-pressed="false">Theo at Tn&minus;2</button>
+        <button type="button" data-lag="3" aria-pressed="false">Theo at Tn&minus;3</button>
+      </div>
+      <div class="legend" id="pred-legend"></div>
+      <div class="mini" id="pred-chart"></div>
+      <div class="table-scroll" id="pred-summary"></div>
+      <div class="scroll-y" id="pred-table"></div>
+      <p class="note">Each error is a forecast of the mid at Tn, made k snapshots earlier, minus the mid that actually printed at Tn, so closer to zero is better. The theo forecast uses the theo at Tn&minus;k. The mid-change comparison uses the mid at Tn&minus;k. Looking back two and three snapshots checks whether the theo was early with a good idea. The theo is the one shown in the book panel, so it follows the last-trade switch. The theo wins a snapshot when its error is smaller in size than the mid-change error.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="pnl-title">
+      <h2 id="pnl-title">Trigger and cumulative PnL</h2>
+      <div class="trig" id="trig"></div>
+      <div class="legend">
+        <span><i class="sw-line" style="color:var(--ink)"></i>PnL marked to mid</span>
+        <span><i class="sw-line" style="color:var(--theo)"></i>PnL marked to theo</span>
+      </div>
+      <div class="mini" id="pnl-chart"></div>
+      <div class="stats" id="pnl-stats"></div>
+      <div class="scroll-y" id="pnl-table"></div>
+      <p class="note">Trigger: at each snapshot, if the theo is above ask levels, buy them, and if it is below bid levels, sell into them, working outward from the best price, part-filling the last level once the cap is reached. Size cap: when entering or adding to a position (buying when flat or long, selling when flat or short), trade at most 100 shares or 20% of the shares showing on the side traded, whichever is smaller. When getting out (buying when short, selling when long), the flat cap is 100. The position is capped at &plusmn;300: buying stops at +300 and selling stops at &minus;300, and an entering trade is cut back so the position never passes the limit. If the position is at the limit and the theo sits between the best bid and best ask, trade up to 100 shares at the touch to cut exposure: sell when long, buy when short. Prices are the displayed ones, from the book as given, not the synthetic last-trade level, and the 20% is taken on that visible book too. There is no exit rule beyond this, and no fees. PnL = cash + position &times; mark, with the mark being that snapshot's mid or its theo. Each snapshot is treated as tradable, but resting orders persist between snapshots, so the same liquidity can be counted more than once.</p>
+    </section>
+  </div>
+</div>
+
+<script>
+const BOOKS_RAW = [{"id": "T01", "time": "09:00:00", "bids": [{"px": 8.5, "qty": 10, "age": 30}, {"px": 8.45, "qty": 50, "age": 30}, {"px": 8.4, "qty": 24, "age": 30}], "asks": [{"px": 8.55, "qty": 10, "age": 30}, {"px": 8.6, "qty": 300, "age": 30}, {"px": 8.65, "qty": 300, "age": 30}]}, {"id": "T02", "time": "09:00:05", "bids": [{"px": 8.45, "qty": 50, "age": 35}, {"px": 8.4, "qty": 24, "age": 35}, {"px": 8.35, "qty": 100, "age": 35}], "asks": [{"px": 8.55, "qty": 10, "age": 35}, {"px": 8.6, "qty": 300, "age": 35}, {"px": 8.65, "qty": 300, "age": 35}]}, {"id": "T03", "time": "09:00:10", "bids": [{"px": 8.45, "qty": 50, "age": 40}, {"px": 8.4, "qty": 24, "age": 40}, {"px": 8.35, "qty": 100, "age": 40}], "asks": [{"px": 8.5, "qty": 20, "age": 0}, {"px": 8.55, "qty": 5, "age": 40}, {"px": 8.6, "qty": 300, "age": 40}]}, {"id": "T04", "time": "09:00:15", "bids": [{"px": 8.45, "qty": 10, "age": 45}, {"px": 8.4, "qty": 24, "age": 45}, {"px": 8.35, "qty": 100, "age": 45}], "asks": [{"px": 8.5, "qty": 20, "age": 5}, {"px": 8.55, "qty": 5, "age": 45}, {"px": 8.6, "qty": 300, "age": 45}]}, {"id": "T05", "time": "09:00:20", "bids": [{"px": 8.4, "qty": 24, "age": 50}, {"px": 8.35, "qty": 100, "age": 50}, {"px": 8.3, "qty": 60, "age": 0}], "asks": [{"px": 8.45, "qty": 30, "age": 0}, {"px": 8.5, "qty": 20, "age": 10}, {"px": 8.55, "qty": 5, "age": 50}]}, {"id": "T06", "time": "09:00:25", "bids": [{"px": 8.4, "qty": 80, "age": 0}, {"px": 8.35, "qty": 100, "age": 55}, {"px": 8.3, "qty": 60, "age": 5}], "asks": [{"px": 8.45, "qty": 27, "age": 5}, {"px": 8.5, "qty": 20, "age": 15}, {"px": 8.55, "qty": 5, "age": 55}]}, {"id": "T07", "time": "09:00:30", "bids": [{"px": 8.4, "qty": 580, "age": 0}, {"px": 8.35, "qty": 100, "age": 60}, {"px": 8.3, "qty": 60, "age": 10}], "asks": [{"px": 8.45, "qty": 27, "age": 10}, {"px": 8.5, "qty": 20, "age": 20}, {"px": 8.55, "qty": 5, "age": 60}]}, {"id": "T08", "time": "09:00:35", "bids": [{"px": 8.4, "qty": 580, "age": 5}, {"px": 8.35, "qty": 100, "age": 65}, {"px": 8.3, "qty": 60, "age": 15}], "asks": [{"px": 8.45, "qty": 40, "age": 0}, {"px": 8.5, "qty": 20, "age": 25}, {"px": 8.55, "qty": 5, "age": 65}]}, {"id": "T09", "time": "09:00:40", "bids": [{"px": 8.4, "qty": 80, "age": 10}, {"px": 8.35, "qty": 100, "age": 70}, {"px": 8.3, "qty": 60, "age": 20}], "asks": [{"px": 8.45, "qty": 25, "age": 5}, {"px": 8.5, "qty": 20, "age": 30}, {"px": 8.55, "qty": 5, "age": 70}]}, {"id": "T10", "time": "09:00:45", "bids": [{"px": 8.4, "qty": 75, "age": 15}, {"px": 8.35, "qty": 100, "age": 75}, {"px": 8.3, "qty": 60, "age": 25}], "asks": [{"px": 8.45, "qty": 25, "age": 10}, {"px": 8.5, "qty": 20, "age": 35}, {"px": 8.55, "qty": 5, "age": 75}]}, {"id": "T11", "time": "09:00:50", "bids": [{"px": 8.55, "qty": 15, "age": 0}, {"px": 8.5, "qty": 20, "age": 0}, {"px": 8.4, "qty": 75, "age": 20}], "asks": [{"px": 8.6, "qty": 290, "age": 80}, {"px": 8.65, "qty": 300, "age": 80}, {"px": 8.7, "qty": 5, "age": 80}]}, {"id": "T12", "time": "09:00:55", "bids": [{"px": 8.55, "qty": 40, "age": 0}, {"px": 8.5, "qty": 30, "age": 0}, {"px": 8.45, "qty": 20, "age": 0}], "asks": [{"px": 8.6, "qty": 240, "age": 85}, {"px": 8.65, "qty": 300, "age": 85}, {"px": 8.7, "qty": 5, "age": 85}]}, {"id": "T13", "time": "09:01:00", "bids": [{"px": 8.55, "qty": 60, "age": 0}, {"px": 8.5, "qty": 30, "age": 5}, {"px": 8.45, "qty": 20, "age": 5}], "asks": [{"px": 8.6, "qty": 120, "age": 90}, {"px": 8.65, "qty": 300, "age": 90}, {"px": 8.7, "qty": 5, "age": 90}]}, {"id": "T14", "time": "09:01:05", "bids": [{"px": 8.6, "qty": 50, "age": 0}, {"px": 8.55, "qty": 60, "age": 5}, {"px": 8.5, "qty": 30, "age": 10}], "asks": [{"px": 8.65, "qty": 10, "age": 0}, {"px": 8.7, "qty": 5, "age": 95}, {"px": 8.75, "qty": 40, "age": 0}]}, {"id": "T15", "time": "09:01:10", "bids": [{"px": 8.6, "qty": 70, "age": 0}, {"px": 8.55, "qty": 60, "age": 10}, {"px": 8.5, "qty": 30, "age": 15}], "asks": [{"px": 8.65, "qty": 10, "age": 0}, {"px": 8.7, "qty": 5, "age": 100}, {"px": 8.75, "qty": 40, "age": 5}]}, {"id": "T16", "time": "09:01:15", "bids": [{"px": 8.6, "qty": 90, "age": 0}, {"px": 8.55, "qty": 60, "age": 15}, {"px": 8.5, "qty": 30, "age": 20}], "asks": [{"px": 8.65, "qty": 10, "age": 0}, {"px": 8.7, "qty": 5, "age": 105}, {"px": 8.75, "qty": 40, "age": 10}]}, {"id": "T17", "time": "09:01:20", "bids": [{"px": 8.6, "qty": 50, "age": 5}, {"px": 8.55, "qty": 60, "age": 20}, {"px": 8.5, "qty": 30, "age": 25}], "asks": [{"px": 8.65, "qty": 10, "age": 5}, {"px": 8.7, "qty": 5, "age": 110}, {"px": 8.75, "qty": 40, "age": 15}]}, {"id": "T18", "time": "09:01:25", "bids": [{"px": 8.4, "qty": 10, "age": 55}, {"px": 8.35, "qty": 20, "age": 115}, {"px": 8.3, "qty": 50, "age": 65}], "asks": [{"px": 8.55, "qty": 20, "age": 0}, {"px": 8.6, "qty": 30, "age": 115}, {"px": 8.65, "qty": 10, "age": 10}]}, {"id": "T19", "time": "09:01:30", "bids": [{"px": 8.45, "qty": 30, "age": 0}, {"px": 8.4, "qty": 80, "age": 0}, {"px": 8.35, "qty": 100, "age": 0}], "asks": [{"px": 8.5, "qty": 40, "age": 0}, {"px": 8.55, "qty": 60, "age": 0}, {"px": 8.6, "qty": 100, "age": 0}]}, {"id": "T20", "time": "09:01:35", "bids": [{"px": 8.45, "qty": 60, "age": 0}, {"px": 8.4, "qty": 80, "age": 5}, {"px": 8.35, "qty": 100, "age": 5}], "asks": [{"px": 8.5, "qty": 50, "age": 0}, {"px": 8.55, "qty": 60, "age": 5}, {"px": 8.6, "qty": 100, "age": 5}]}];
+const TRADES_RAW = [{"from": "T01", "printed": "T02", "seq": 1, "aggressor": "SELL", "px": 8.5, "qty": 10, "buyer": "CP-C", "seller": "CP-B"}, {"from": "T02", "printed": "T03", "seq": 1, "aggressor": "BUY", "px": 8.55, "qty": 5, "buyer": "CP-B", "seller": "CP-C"}, {"from": "T03", "printed": "T04", "seq": 1, "aggressor": "SELL", "px": 8.45, "qty": 40, "buyer": "CP-C", "seller": "CP-A"}, {"from": "T04", "printed": "T05", "seq": 1, "aggressor": "SELL", "px": 8.45, "qty": 10, "buyer": "CP-C", "seller": "CP-B"}, {"from": "T05", "printed": "T06", "seq": 1, "aggressor": "BUY", "px": 8.45, "qty": 3, "buyer": "CP-B", "seller": "CP-C"}, {"from": "T07", "printed": "T08", "seq": 1, "aggressor": "BUY", "px": 8.45, "qty": 27, "buyer": "CP-B", "seller": "CP-C"}, {"from": "T08", "printed": "T09", "seq": 1, "aggressor": "BUY", "px": 8.45, "qty": 15, "buyer": "CP-B", "seller": "CP-D"}, {"from": "T09", "printed": "T10", "seq": 1, "aggressor": "SELL", "px": 8.4, "qty": 5, "buyer": "CP-C", "seller": "CP-B"}, {"from": "T10", "printed": "T11", "seq": 1, "aggressor": "BUY", "px": 8.45, "qty": 25, "buyer": "CP-A", "seller": "CP-D"}, {"from": "T10", "printed": "T11", "seq": 2, "aggressor": "BUY", "px": 8.5, "qty": 20, "buyer": "CP-A", "seller": "CP-C"}, {"from": "T10", "printed": "T11", "seq": 3, "aggressor": "BUY", "px": 8.55, "qty": 5, "buyer": "CP-A", "seller": "CP-C"}, {"from": "T10", "printed": "T11", "seq": 4, "aggressor": "BUY", "px": 8.6, "qty": 10, "buyer": "CP-A", "seller": "CP-E"}, {"from": "T11", "printed": "T12", "seq": 1, "aggressor": "BUY", "px": 8.6, "qty": 50, "buyer": "CP-A", "seller": "CP-E"}, {"from": "T12", "printed": "T13", "seq": 1, "aggressor": "BUY", "px": 8.6, "qty": 100, "buyer": "CP-A", "seller": "CP-E"}, {"from": "T12", "printed": "T13", "seq": 2, "aggressor": "BUY", "px": 8.6, "qty": 20, "buyer": "CP-C", "seller": "CP-E"}, {"from": "T13", "printed": "T14", "seq": 1, "aggressor": "BUY", "px": 8.6, "qty": 120, "buyer": "CP-A", "seller": "CP-E"}, {"from": "T14", "printed": "T15", "seq": 1, "aggressor": "BUY", "px": 8.65, "qty": 10, "buyer": "CP-C", "seller": "CP-E"}, {"from": "T14", "printed": "T15", "seq": 2, "aggressor": "BUY", "px": 8.65, "qty": 10, "buyer": "CP-B", "seller": "CP-E"}, {"from": "T14", "printed": "T15", "seq": 3, "aggressor": "BUY", "px": 8.65, "qty": 10, "buyer": "CP-C", "seller": "CP-E"}, {"from": "T15", "printed": "T16", "seq": 1, "aggressor": "BUY", "px": 8.65, "qty": 10, "buyer": "CP-B", "seller": "CP-E"}, {"from": "T15", "printed": "T16", "seq": 2, "aggressor": "BUY", "px": 8.65, "qty": 10, "buyer": "CP-C", "seller": "CP-E"}, {"from": "T15", "printed": "T16", "seq": 3, "aggressor": "BUY", "px": 8.65, "qty": 10, "buyer": "CP-B", "seller": "CP-E"}, {"from": "T16", "printed": "T17", "seq": 1, "aggressor": "SELL", "px": 8.6, "qty": 40, "buyer": "CP-C", "seller": "CP-A"}, {"from": "T17", "printed": "T18", "seq": 1, "aggressor": "SELL", "px": 8.6, "qty": 50, "buyer": "CP-C", "seller": "CP-A"}, {"from": "T17", "printed": "T18", "seq": 2, "aggressor": "SELL", "px": 8.55, "qty": 60, "buyer": "CP-C", "seller": "CP-A"}, {"from": "T17", "printed": "T18", "seq": 3, "aggressor": "SELL", "px": 8.5, "qty": 30, "buyer": "CP-B", "seller": "CP-A"}, {"from": "T17", "printed": "T18", "seq": 4, "aggressor": "SELL", "px": 8.45, "qty": 20, "buyer": "CP-C", "seller": "CP-A"}, {"from": "T18", "printed": "T19", "seq": 1, "aggressor": "SELL", "px": 8.4, "qty": 10, "buyer": "CP-C", "seller": "CP-B"}, {"from": "T19", "printed": "T20", "seq": 1, "aggressor": "BUY", "px": 8.5, "qty": 10, "buyer": "CP-B", "seller": "CP-C"}];
+
+const secOf = t => { const [h, m, s] = t.split(":").map(Number); return h * 3600 + m * 60 + s; };
+const T0 = secOf(BOOKS_RAW[0].time);
+const BOOKS = BOOKS_RAW.map(b => ({
+  id: b.id, time: b.time, t: secOf(b.time) - T0, bids: b.bids, asks: b.asks,
+  bid: b.bids[0].px, ask: b.asks[0].px,
+}));
+const idxById = Object.fromEntries(BOOKS.map((b, i) => [b.id, i]));
+const STEP = BOOKS.length > 1 ? BOOKS[1].t - BOOKS[0].t : 5;
+
+const TRADES = TRADES_RAW.map(t => ({ ...t }));
+const byInterval = {};
+TRADES.forEach(t => (byInterval[t.from] = byInterval[t.from] || []).push(t));
+
+/* Weights.
+   Distance weight: 2^(-d), d = |price - mid| / mid * 100 (percent). Mid is the mid of the book snapshot the price belongs to
+   (for a trade, the snapshot at the start of its interval, i.e. the book it hit).
+   Time weight: exp(-(k*age)^2). A Gaussian exp(-k^2 t^2) has its inflection at t = 1/(k*sqrt2),
+   so k = 1/(40*sqrt2) puts the inflection at 40 s.
+   Book levels use their age_s; trades use their age back from the selected snapshot. */
+const INFLECTION_S = 40;
+const K = 1 / (INFLECTION_S * Math.SQRT2);
+const pctDist = (px, mid) => (Math.abs(px - mid) / mid) * 100;
+const distWeight = pct => Math.pow(2, -pct);
+const timeWeight = age => Math.exp(-Math.pow(K * age, 2));
+
+/* Book theo: generalised size-weighted mid, each price multiplied by the opposite side's total weight (see buildBook).
+   One level per side, no decay: (bid*askQty + ask*bidQty) / (bidQty + askQty).
+
+   Optional: the most recent trade is counted as one more order (INCLUDE_LAST_TRADE, also the switch on the page).
+   A BUY joins the bids, a SELL joins the asks. It is treated as 0 s old (time weight 1), and its price is taken as
+   midway between the price they traded at and the next level in the direction they traded, read from this snapshot's book:
+   the next ask above for a buy, the next bid below for a sell (one tick further if the visible book has no such level).
+   Same price as an existing level -> added to that level; otherwise -> a new level. Mid and distance weights use the book as given. */
+const TICK = 0.05;
+let INCLUDE_LAST_TRADE = true;
+
+function buildBook(b, tr) {
+  const mid = (b.bid + b.ask) / 2;
+  const mk = l => ({ px: l.px, qty: l.qty, age: l.age, w: l.qty * distWeight(pctDist(l.px, mid)) * timeWeight(l.age), trade: null });
+  const bids = b.bids.map(mk), asks = b.asks.map(mk);
+  let note = null;
+  if (tr) {
+    const isBuy = tr.aggressor === "BUY";
+    const levels = isBuy ? bids : asks;
+    // next level beyond the trade price, in the direction they traded, on the side of the book they traded against
+    const beyond = (isBuy ? b.asks.map(l => l.px).filter(x => x > tr.px + 1e-9).sort((x, y) => x - y)
+                          : b.bids.map(l => l.px).filter(x => x < tr.px - 1e-9).sort((x, y) => y - x))[0];
+    const fallback = beyond === undefined;
+    const next = fallback ? tr.px + (isBuy ? TICK : -TICK) : beyond;
+    const px = (tr.px + next) / 2;
+    const w = tr.qty * distWeight(pctDist(px, mid)) * timeWeight(0);
+    const hit = levels.find(l => Math.abs(l.px - px) < 1e-9);
+    if (hit) {
+      hit.qty += tr.qty; hit.w += w; hit.age = 0; hit.trade = "merged";
+    } else {
+      levels.push({ px, qty: tr.qty, age: 0, w, trade: "new" });
+      levels.sort(isBuy ? (x, y) => y.px - x.px : (x, y) => x.px - y.px);
+    }
+    note = { tr, px, next, fallback, merged: !!hit, side: isBuy ? "bid" : "ask" };
+  }
+  // Every price is multiplied by the total weight of the OPPOSITE side, e.g. bids 8.30/8.35/8.40 and asks 8.45/8.50/8.55:
+  // 8.45, 8.50 and 8.55 are each multiplied by (w8.30 + w8.35 + w8.40), and 8.30, 8.35 and 8.40 each by (w8.45 + w8.50 + w8.55).
+  // The theo is the sum of those products divided by the sum of the multipliers used.
+  // The last trade (if counted) is already part of its side: it adds to a level's weight, or is an extra price with its own weight.
+  const side = levels => ({
+    W: levels.reduce((a, l) => a + l.w, 0),
+    prices: levels.map(l => l.px).sort((x, y) => x - y),
+    sumP: levels.reduce((a, l) => a + l.px, 0),
+    n: levels.length,
+  });
+  const bs = side(bids), as = side(asks);
+  const num = bs.sumP * as.W + as.sumP * bs.W;   // bid prices x ask-side weight, ask prices x bid-side weight
+  const den = bs.n * as.W + as.n * bs.W;
+  return { bids, asks, bs, as, mid, note, theo: num / den };
+}
+
+TRADES.forEach(t => {
+  const n = byInterval[t.from].length;
+  const bk = BOOKS[idxById[t.from]];
+  t.t = bk.t + (t.seq / (n + 1)) * STEP;
+  t.printedIdx = idxById[t.printed];
+});
+TRADES.sort((a, b) => a.t - b.t);
+
+BOOKS.forEach((b, i) => {
+  const seen = TRADES.filter(t => t.printedIdx <= i);
+  const last = seen.length ? seen[seen.length - 1] : null;
+  b.base = buildBook(b, null);
+  b.withTrade = last ? buildBook(b, last) : b.base;
+});
+const view = i => (INCLUDE_LAST_TRADE ? BOOKS[i].withTrade : BOOKS[i].base);
+
+const fmtT = s => {
+  const total = T0 + Math.round(s);
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), sec = total % 60;
+  return [h, m, sec].map(n => String(n).padStart(2, "0")).join(":");
+};
+const $ = s => document.querySelector(s);
+let current = 0;
+
+$("#sub").textContent = BOOKS.length + " snapshots, " + STEP + " seconds apart, from " + BOOKS[0].time + " to " + BOOKS[BOOKS.length - 1].time + ". Pick a timestamp to see the book and everything traded up to that moment.";
+
+/* tabs */
+const tabsEl = $("#tabs");
+BOOKS.forEach((b, i) => {
+  const btn = document.createElement("button");
+  btn.className = "tab"; btn.setAttribute("role", "tab"); btn.id = "tab-" + i;
+  btn.innerHTML = '<span class="id">' + b.id + '</span><span class="tm">' + b.time + "</span>";
+  btn.addEventListener("click", () => select(i));
+  btn.addEventListener("keydown", e => {
+    if (e.key === "ArrowRight") { select(Math.min(i + 1, BOOKS.length - 1)); $("#tab-" + current).focus(); e.preventDefault(); }
+    if (e.key === "ArrowLeft") { select(Math.max(i - 1, 0)); $("#tab-" + current).focus(); e.preventDefault(); }
+  });
+  tabsEl.appendChild(btn);
+});
+$("#inc").addEventListener("change", e => { INCLUDE_LAST_TRADE = e.target.checked; select(current); });
+$("#prev").addEventListener("click", () => select(Math.max(current - 1, 0)));
+$("#next").addEventListener("click", () => select(Math.min(current + 1, BOOKS.length - 1)));
+
+/* order book */
+function renderBook(i) {
+  const b = BOOKS[i], v = view(i), bb = BOOKS[i].base; // ladder = book as given; theo and pairs = active view
+  $("#book-title").textContent = "Order book at " + b.time + " (" + b.id + ")";
+  const cum = levels => { let c = 0; return levels.map(l => (c += l.qty)); };
+  const ca = cum(bb.asks), cb = cum(bb.bids);
+  const maxCum = Math.max(ca[ca.length - 1], cb[cb.length - 1]);
+  const fw = w => (w >= 10 ? w.toFixed(0) : w >= 0.01 ? w.toFixed(2) : "&lt;0.01");
+  const fp = x => { const s = x.toFixed(3); return s.endsWith("0") ? x.toFixed(2) : s; };
+  const row = (l, side, n, c) =>
+    '<div class="lvl ' + side + '" style="--w:' + ((c / maxCum) * 100).toFixed(1) + '%" title="' + side + " " + n + ": weight " + fw(l.w) + '">' +
+    '<span class="px">' + l.px.toFixed(2) + "</span>" +
+    '<span class="qty">' + l.qty + "</span>" +
+    '<span class="cum">' + c + "</span>" +
+    '<span class="age' + (l.age === 0 ? " fresh" : "") + '">' + l.age + "s</span></div>";
+  const asks = bb.asks.map((l, k) => row(l, "ask", k + 1, ca[k])).reverse().join("");
+  const bids = bb.bids.map((l, k) => row(l, "bid", k + 1, cb[k])).join("");
+  const spread = b.ask - b.bid;
+  let cap = "";
+  if (INCLUDE_LAST_TRADE) {
+    cap = v.note
+      ? "<span>Counted in the theo only, not shown in the book above: <b>" + v.note.tr.aggressor + " " + v.note.tr.qty + " @ " + v.note.tr.px.toFixed(2) + "</b>, treated as 0 s old at <b>" + v.note.px.toFixed(3) + "</b> (midway to " + v.note.next.toFixed(2) + (v.note.fallback ? ", one tick on" : "") + ")</span>"
+      : "<span>No trades yet, so nothing counted in the theo</span>";
+  }
+  $("#book").innerHTML =
+    '<div class="lvl-head"><span>Price</span><span>Size</span><span>Total</span><span>Age</span></div>' +
+    asks +
+    '<div class="spread"><span>Spread <b>' + spread.toFixed(2) + "</b></span><span>Mid <b>" + v.mid.toFixed(3) + "</b></span><span>Theo <b>" + v.theo.toFixed(4) + "</b></span></div>" +
+    bids +
+    '<div class="sides">' + cap +
+    "</div>" +
+    '<div class="pairs"><div class="ph"><span>Prices</span><span>Multiplied by</span><span>Total weight</span></div>' +
+    "<div><span>Bids " + v.bs.prices.map(fp).join(", ") + "</span><span>ask-side weight</span><span>" + fw(v.as.W) + "</span></div>" +
+    "<div><span>Asks " + v.as.prices.map(fp).join(", ") + "</span><span>bid-side weight</span><span>" + fw(v.bs.W) + "</span></div></div>";
+}
+
+/* chart */
+// price axis from the data: every book price, theo and trade, padded by one tick
+const AXIS_PX = [];
+BOOKS.forEach(b => {
+  b.bids.forEach(l => AXIS_PX.push(l.px)); b.asks.forEach(l => AXIS_PX.push(l.px));
+  AXIS_PX.push(b.base.theo, b.withTrade.theo);
+  if (b.withTrade.note) AXIS_PX.push(b.withTrade.note.px);
+});
+TRADES.forEach(t => AXIS_PX.push(t.px));
+const YMIN = Math.floor(Math.min(...AXIS_PX) / TICK + 1e-6) * TICK - TICK;
+const YMAX = Math.ceil(Math.max(...AXIS_PX) / TICK - 1e-6) * TICK + TICK;
+const Y_TICKS = Math.round((YMAX - YMIN) / TICK);
+function renderChart(i) {
+  const el = $("#chart");
+  const W = Math.max(300, el.clientWidth), H = W < 520 ? 300 : 360;
+  const m = { l: 44, r: 12, t: 12, b: 28 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const xMin = -3, xMax = BOOKS[BOOKS.length - 1].t + 3;
+  const X = s => m.l + ((s - xMin) / (xMax - xMin)) * iw;
+  const Y = p => m.t + ((YMAX - p) / (YMAX - YMIN)) * ih;
+  const path = pts => "M" + pts.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join("L");
+  const stepPts = key => {
+    const pts = [];
+    for (let k = 0; k <= i; k++) {
+      const x = X(BOOKS[k].t), y = Y(BOOKS[k][key]);
+      if (k > 0) pts.push([x, pts[pts.length - 1][1]]);
+      pts.push([x, y]);
+    }
+    return pts;
+  };
+  const bidPts = stepPts("bid"), askPts = stepPts("ask");
+  const cx = X(BOOKS[i].t);
+  let s = '<svg viewBox="0 0 ' + W + " " + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="Price chart of trades up to ' + BOOKS[i].time + '">';
+
+  // grid + y labels
+  for (let k = 0; k <= Y_TICKS; k++) {
+    const p = YMIN + k * TICK, y = Y(p);
+    s += '<line x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + y + '" y2="' + y + '" stroke="var(--line)" stroke-width="1"/>';
+    s += '<text x="' + (m.l - 6) + '" y="' + (y + 4) + '" text-anchor="end">' + p.toFixed(2) + "</text>";
+  }
+  // x labels every 15s
+  for (let t = 0; t <= xMax; t += 15) {
+    s += '<text x="' + X(t) + '" y="' + (H - 8) + '" text-anchor="middle">' + fmtT(t) + "</text>";
+  }
+  // snapshot ticks
+  BOOKS.forEach((b, k) => {
+    s += '<line x1="' + X(b.t) + '" x2="' + X(b.t) + '" y1="' + (m.t + ih) + '" y2="' + (m.t + ih + (k === i ? 6 : 3)) + '" stroke="var(--muted)" stroke-width="1"/>';
+  });
+  // future shading
+  s += '<rect x="' + cx + '" y="' + m.t + '" width="' + Math.max(0, W - m.r - cx) + '" height="' + ih + '" fill="var(--line)" opacity="0.35"/>';
+  // spread band
+  s += '<path d="' + path(bidPts.concat(askPts.slice().reverse())) + 'Z" fill="var(--muted)" opacity="0.10"/>';
+  // best bid / ask
+  s += '<path d="' + path(bidPts) + '" fill="none" stroke="var(--bid)" stroke-width="2" stroke-linejoin="round"/>';
+  s += '<path d="' + path(askPts) + '" fill="none" stroke="var(--ask)" stroke-width="2" stroke-linejoin="round"/>';
+
+  const vis = TRADES.filter(t => t.printedIdx <= i);
+  // book theo at each snapshot up to the selected one
+  const tp = [];
+  for (let k = 0; k <= i; k++) tp.push([X(BOOKS[k].t), Y(view(k).theo)]);
+  if (tp.length > 1) s += '<path d="' + path(tp) + '" fill="none" stroke="var(--theo)" stroke-width="2" stroke-linejoin="round"/>';
+  tp.forEach(p => { s += '<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="3" fill="var(--theo)"/>'; });
+  // trades
+  vis.forEach(t => {
+    const r = 3 + Math.sqrt(t.qty) * 0.85;
+    const latest = t.printedIdx === i;
+    const cls = t.aggressor === "BUY" ? "var(--bid)" : "var(--ask)";
+    s += '<circle cx="' + X(t.t).toFixed(1) + '" cy="' + Y(t.px).toFixed(1) + '" r="' + r.toFixed(1) + '" fill="' + cls + '" fill-opacity="0.8" stroke="' +
+      (latest ? "var(--ink)" : "var(--panel)") + '" stroke-width="' + (latest ? 1.8 : 1) + '"><title>' +
+      t.aggressor + " " + t.qty + " @ " + t.px.toFixed(2) + " (buyer " + t.buyer + ", seller " + t.seller + ")</title></circle>";
+  });
+  // cursor
+  s += '<line x1="' + cx + '" x2="' + cx + '" y1="' + m.t + '" y2="' + (m.t + ih) + '" stroke="var(--ink)" stroke-width="1"/>';
+  const lw = 34, lx = Math.min(Math.max(cx - lw / 2, m.l), W - m.r - lw);
+  s += '<rect x="' + lx + '" y="' + (m.t - 2) + '" width="' + lw + '" height="16" rx="3" fill="var(--tab-active-bg)"/>';
+  s += '<text class="cur-label" x="' + (lx + lw / 2) + '" y="' + (m.t + 10) + '" text-anchor="middle">' + BOOKS[i].id + "</text>";
+  s += "</svg>";
+  el.innerHTML = s;
+
+  el.querySelector("svg").addEventListener("click", e => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    const sec = xMin + ((px - m.l) / iw) * (xMax - xMin);
+    let best = 0;
+    BOOKS.forEach((b, k) => { if (Math.abs(b.t - sec) < Math.abs(BOOKS[best].t - sec)) best = k; });
+    select(best);
+  });
+
+  // stats
+  const vol = vis.reduce((a, t) => a + t.qty, 0);
+  $("#stats").innerHTML = vis.length
+    ? "<span>Trades <b>" + vis.length + "</b></span><span>Volume <b>" + vol + "</b></span><span>Book theo <b>" + view(i).theo.toFixed(4) + "</b></span><span>Last price <b>" + vis[vis.length - 1].px.toFixed(2) + "</b></span>"
+    : "<span>No trades yet</span><span>Book theo <b>" + view(i).theo.toFixed(4) + "</b></span>";
+}
+
+/* trades printed since previous snapshot */
+function renderTrades(i) {
+  const title = $("#tr-title");
+  if (i === 0) {
+    title.textContent = "Trades printed since the previous snapshot";
+    $("#tr").innerHTML = '<p class="empty">This is the first snapshot, so there is nothing earlier.</p>';
+    return;
+  }
+  title.textContent = "Trades printed since " + BOOKS[i - 1].id + " (" + BOOKS[i - 1].time + " to " + BOOKS[i].time + ")";
+  const rows = TRADES.filter(t => t.printedIdx === i).sort((a, b) => a.seq - b.seq);
+  if (!rows.length) {
+    $("#tr").innerHTML = '<p class="empty">No trades in this interval.</p>';
+    return;
+  }
+  $("#tr").innerHTML = '<div class="table-scroll"><table><thead><tr><th class="n">#</th><th>Aggressor</th><th class="n">Price</th><th class="n">Qty</th><th>Buyer</th><th>Seller</th></tr></thead><tbody>' +
+    rows.map(t => '<tr><td class="n">' + t.seq + '</td><td class="' + t.aggressor.toLowerCase() + '">' + t.aggressor + '</td><td class="n">' + t.px.toFixed(2) +
+      '</td><td class="n">' + t.qty + "</td><td>" + t.buyer + "</td><td>" + t.seller + "</td></tr>").join("") + "</tbody></table></div>";
+}
+
+/* prediction + trigger simulation, recomputed from the active theo (so it follows the last-trade switch) */
+const MAX_TRADE = 100;       // most shares traded at one snapshot
+const ENTRY_BOOK_FRACTION = 0.20; // entering or adding to a position: also at most this share of the visible book on the side traded
+const POSITION_LIMIT = 300;  // hard limit: no buying at +300, no selling at -300; at the limit, trade to reduce when theo sits between bid and ask
+const LAGS = [1, 2, 3];
+let LAG = 1;
+
+function computeSim() {
+  const rows = [];
+  let pos = 0, cash = 0;
+  BOOKS.forEach((b, i) => {
+    const v = view(i), theo = v.theo, mid = v.mid;
+
+    // forecasts of this mid made 1, 2 and 3 snapshots earlier
+    const lag = {};
+    LAGS.forEach(L => {
+      lag[L] = i >= L ? { thPrev: view(i - L).theo, midPrev: view(i - L).mid, eTheo: view(i - L).theo - mid, eMid: view(i - L).mid - mid } : null;
+    });
+
+    // trigger: levels the theo passes, from the touch outward; else reduce exposure when over the limit
+    const sigBuy = b.asks.filter(l => l.px < theo);
+    const sigSell = b.bids.filter(l => l.px > theo);
+    let side = null, levels = [], reason = null, signal = [];
+    if (sigBuy.length) { side = "BUY"; levels = sigBuy; signal = sigBuy; reason = "signal"; }
+    else if (sigSell.length) { side = "SELL"; levels = sigSell; signal = sigSell; reason = "signal"; }
+    else if (pos >= POSITION_LIMIT) { side = "SELL"; levels = b.bids; reason = "reduce"; }
+    else if (pos <= -POSITION_LIMIT) { side = "BUY"; levels = b.asks; reason = "reduce"; }
+    const fills = [];
+    // Entering or adding to a position (buying when flat or long, selling when flat or short):
+    //   at most MAX_TRADE or ENTRY_BOOK_FRACTION of the visible book on the side traded, whichever is smaller.
+    // Getting out (buying when short, selling when long, and the reduce rule): the flat MAX_TRADE.
+    // Entering trades are also cut back so the position never passes the limit.
+    const entering = side === "BUY" ? pos >= 0 : pos <= 0;
+    const sideTotal = side ? (side === "BUY" ? b.asks : b.bids).reduce((a, l) => a + l.qty, 0) : 0;
+    const bookCap = Math.floor(ENTRY_BOOK_FRACTION * sideTotal);
+    const cap0 = side ? (entering && reason === "signal" ? Math.min(MAX_TRADE, bookCap) : MAX_TRADE) : 0;
+    const room = side === "BUY" ? POSITION_LIMIT - pos : POSITION_LIMIT + pos;
+    let rem = reason === "signal" && entering ? Math.min(cap0, Math.max(0, room)) : cap0;
+    if (side) {
+      for (const l of levels) {
+        const q = Math.min(rem, l.qty);
+        if (q > 0) fills.push({ side, px: l.px, qty: q, avail: l.qty });
+        rem -= q;
+        if (rem <= 0) break;
+      }
+    }
+    let dq = 0, dc = 0;
+    fills.forEach(f => { const sg = f.side === "BUY" ? 1 : -1; dq += sg * f.qty; dc -= sg * f.qty * f.px; });
+    const posBefore = pos;
+    pos += dq; cash += dc;
+    rows.push({
+      i, id: b.id, theo, mid, fills, dq, dc, pos, posBefore, cash, reason, signal,
+      blocked: signal.length > 0 && fills.length === 0,
+      entering, sideTotal, cap0, bookBinds: entering && reason === "signal" && bookCap < MAX_TRADE,
+      signalQty: signal.reduce((a, l) => a + l.qty, 0),
+      action: !fills.length ? "HOLD" : dq > 0 ? "BUY" : "SELL",
+      pnlMid: cash + pos * mid, pnlTheo: cash + pos * theo, lag,
+    });
+  });
+  return rows;
+}
+
+const sgn = (x, d) => (x > 0.5 * Math.pow(10, -d) ? "+" : x < -0.5 * Math.pow(10, -d) ? "\u2212" : "") + Math.abs(x).toFixed(d);
+
+function miniChart(el, series, cur, digits) {
+  const W = Math.max(280, el.clientWidth), H = 220, m = { l: 54, r: 10, t: 10, b: 24 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const all = series.flatMap(s => s.vals).filter(v => v !== null);
+  let lo = Math.min(...all, 0), hi = Math.max(...all, 0);
+  if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const xMin = -3, xMax = BOOKS[BOOKS.length - 1].t + 3;
+  const X = t => m.l + ((t - xMin) / (xMax - xMin)) * iw;
+  const Y = v => m.t + ((hi - v) / (hi - lo)) * ih;
+  let s = '<svg viewBox="0 0 ' + W + " " + H + '" width="' + W + '" height="' + H + '">';
+  for (let k = 0; k <= 4; k++) {
+    const v = lo + ((hi - lo) * k) / 4, y = Y(v);
+    s += '<line x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + y + '" y2="' + y + '" stroke="var(--line)"/>';
+    s += '<text x="' + (m.l - 6) + '" y="' + (y + 4) + '" text-anchor="end">' + v.toFixed(digits) + "</text>";
+  }
+  s += '<line x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + Y(0) + '" y2="' + Y(0) + '" stroke="var(--muted)" stroke-width="1"/>';
+  BOOKS.forEach((b, k) => {
+    if (k % 4 === 0) s += '<text x="' + X(b.t) + '" y="' + (H - 6) + '" text-anchor="middle">' + b.id + "</text>";
+  });
+  const cx = X(BOOKS[cur].t);
+  s += '<rect x="' + cx + '" y="' + m.t + '" width="' + Math.max(0, W - m.r - cx) + '" height="' + ih + '" fill="var(--line)" opacity="0.35"/>';
+  series.forEach(se => {
+    const pts = [];
+    se.vals.forEach((v, k) => { if (k <= cur && v !== null) pts.push([X(BOOKS[k].t), Y(v)]); });
+    if (pts.length > 1) s += '<path d="M' + pts.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join("L") + '" fill="none" stroke="' + se.color + '" stroke-width="2"' + (se.dash ? ' stroke-dasharray="5 4"' : "") + ' stroke-linejoin="round"/>';
+    pts.forEach(p => { s += '<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="2.8" fill="' + se.color + '"/>'; });
+  });
+  s += '<line x1="' + cx + '" x2="' + cx + '" y1="' + m.t + '" y2="' + (m.t + ih) + '" stroke="var(--ink)"/>';
+  s += "</svg>";
+  el.innerHTML = s;
+}
+
+function renderSim(i) {
+  const S = computeSim(), r = S[i];
+  const L = LAG, kL = "Tn&minus;" + L;
+
+  /* prediction: selected look-back drives the chart and detail table; the summary shows all look-backs */
+  document.querySelectorAll("#lagbar button").forEach(btn => btn.setAttribute("aria-pressed", String(Number(btn.dataset.lag) === L)));
+  $("#pred-legend").innerHTML =
+    '<span><i class="sw-line" style="color:var(--theo)"></i>Theo error (theo at ' + kL + " minus mid at Tn)</span>" +
+    '<span><i class="sw-dash" style="color:var(--ink)"></i>Mid-change error (mid at ' + kL + " minus mid at Tn)</span>";
+  miniChart($("#pred-chart"), [
+    { vals: S.map(x => (x.lag[L] ? x.lag[L].eTheo : null)), color: "var(--theo)" },
+    { vals: S.map(x => (x.lag[L] ? x.lag[L].eMid : null)), color: "var(--ink)", dash: true },
+  ], i, 3);
+
+  const stat = k => {
+    const up = S.slice(0, i + 1).filter(x => x.lag[k]);
+    if (!up.length) return null;
+    const mae = f => up.reduce((a, x) => a + Math.abs(x.lag[k][f]), 0) / up.length;
+    const rmse = f => Math.sqrt(up.reduce((a, x) => a + x.lag[k][f] * x.lag[k][f], 0) / up.length);
+    return { n: up.length, maeT: mae("eTheo"), maeM: mae("eMid"), rmseT: rmse("eTheo"), rmseM: rmse("eMid"), wins: up.filter(x => Math.abs(x.lag[k].eTheo) < Math.abs(x.lag[k].eMid)).length };
+  };
+  $("#pred-summary").innerHTML = '<table><thead><tr><th>Look back</th><th class="n">Scored</th><th class="n">MAE theo</th><th class="n">MAE mid change</th><th class="n">RMSE theo</th><th class="n">RMSE mid change</th><th class="n">Theo closer</th></tr></thead><tbody>' +
+    LAGS.map(k => {
+      const st = stat(k);
+      return '<tr' + (k === L ? ' class="sel"' : "") + "><td>Tn&minus;" + k + "</td>" + (st
+        ? '<td class="n">' + st.n + '</td><td class="n">' + st.maeT.toFixed(4) + '</td><td class="n">' + st.maeM.toFixed(4) + '</td><td class="n">' + st.rmseT.toFixed(4) + '</td><td class="n">' + st.rmseM.toFixed(4) + '</td><td class="n">' + st.wins + " of " + st.n + "</td>"
+        : '<td class="n" colspan="6">Not enough history yet</td>') + "</tr>";
+    }).join("") + "</tbody></table>";
+
+  const upto = S.slice(0, i + 1).filter(x => x.lag[L]);
+  const pt = $("#pred-table");
+  pt.innerHTML = upto.length
+    ? '<table><thead><tr><th>At</th><th class="n">Theo at ' + kL + '</th><th class="n">Mid at ' + kL + '</th><th class="n">Mid at Tn</th><th class="n">Theo error</th><th class="n">Mid-change error</th></tr></thead><tbody>' +
+      upto.map(x => '<tr' + (x.i === i ? ' class="cur"' : "") + "><td>" + x.id + '</td><td class="n">' + x.lag[L].thPrev.toFixed(4) + '</td><td class="n">' + x.lag[L].midPrev.toFixed(3) +
+        '</td><td class="n">' + x.mid.toFixed(3) + '</td><td class="n">' + sgn(x.lag[L].eTheo, 4) + '</td><td class="n">' + sgn(x.lag[L].eMid, 4) + "</td></tr>").join("") + "</tbody></table>"
+    : '<p class="empty">No prediction yet: this look-back needs ' + L + " earlier snapshot" + (L > 1 ? "s" : "") + ".</p>";
+  pt.scrollTop = pt.scrollHeight;
+
+  /* trigger for this snapshot */
+  const b = BOOKS[i];
+  const fmtLv = ls => ls.map(f => f.px.toFixed(2) + " &times; " + f.qty).join(", ");
+  let msg;
+  if (r.action === "HOLD") {
+    msg = r.blocked
+      ? '<span class="badge hold">HOLD</span><span>Theo <b>' + r.theo.toFixed(4) + "</b> passes " + r.signal.length + (r.signal[0].px > r.theo ? " bid" : " ask") + " level" + (r.signal.length > 1 ? "s" : "") +
+        (r.cap0 === 0
+          ? ", but " + Math.round(ENTRY_BOOK_FRACTION * 100) + "% of the visible book rounds to 0 shares, so no trade."
+          : ", but the position is <b>" + sgn(r.posBefore, 0) + "</b>, at the " + POSITION_LIMIT + " limit, so no more " + (r.signal[0].px > r.theo ? "selling" : "buying") + ".") + "</span>"
+      : '<span class="badge hold">HOLD</span><span>Theo <b>' + r.theo.toFixed(4) + "</b> does not pass any level (best bid " + b.bid.toFixed(2) + ", best ask " + b.ask.toFixed(2) + ") and the position (" + sgn(r.posBefore, 0) + ") is inside the &plusmn;" + POSITION_LIMIT + " limit, so no trade.</span>";
+  } else {
+    const buy = r.action === "BUY", qty = Math.abs(r.dq), avg = Math.abs(r.dc) / qty;
+    const exec = (buy ? "Buy " : "Sell ") + "<b>" + qty + "</b> at an average <b>" + avg.toFixed(4) + "</b>";
+    if (r.reason === "reduce") {
+      msg = '<span class="badge ' + (buy ? "buy" : "sell") + '">' + r.action + "</span><span>Theo <b>" + r.theo.toFixed(4) + "</b> is between the best bid and ask, but the position is <b>" + sgn(r.posBefore, 0) +
+        "</b>, at the &plusmn;" + POSITION_LIMIT + " limit. To cut exposure: " + exec.toLowerCase().replace(/^./, c => c.toUpperCase()) + " (limit " + MAX_TRADE + ").</span>";
+    } else {
+      msg = '<span class="badge ' + (buy ? "buy" : "sell") + '">' + r.action + "</span><span>Theo <b>" + r.theo.toFixed(4) + "</b> is " + (buy ? "above " + r.signal.length + " ask" : "below " + r.signal.length + " bid") +
+        " level" + (r.signal.length > 1 ? "s" : "") + " (" + fmtLv(r.signal) + "; " + r.signalQty + " shares in all). " + exec + (qty < r.signalQty ? (qty >= r.cap0 ? ", capped at " + qty + (r.bookBinds ? " (" + Math.round(ENTRY_BOOK_FRACTION * 100) + "% of the " + r.sideTotal + " shares showing on the " + (buy ? "ask" : "bid") + " side)" : (r.entering ? "" : " to get out")) : ", cut to " + qty + " by the &plusmn;" + POSITION_LIMIT + " position limit") : "") + ".</span>";
+    }
+  }
+  $("#trig").innerHTML = msg;
+
+  /* PnL */
+  miniChart($("#pnl-chart"), [
+    { vals: S.map(x => x.pnlMid), color: "var(--ink)" },
+    { vals: S.map(x => x.pnlTheo), color: "var(--theo)" },
+  ], i, 1);
+  $("#pnl-stats").innerHTML =
+    "<span>Position <b>" + sgn(r.pos, 0) + "</b></span><span>Cash <b>" + sgn(r.cash, 2) + "</b></span>" +
+    "<span>PnL at mid <b>" + sgn(r.pnlMid, 2) + "</b></span><span>PnL at theo <b>" + sgn(r.pnlTheo, 2) + "</b></span>";
+  const pn = $("#pnl-table");
+  pn.innerHTML = '<table><thead><tr><th>At</th><th>Action</th><th class="n">Traded</th><th class="n">Position</th><th class="n">PnL at mid</th><th class="n">PnL at theo</th></tr></thead><tbody>' +
+    S.slice(0, i + 1).map(x => {
+      const traded = x.action === "HOLD" ? "" : sgn(x.dq, 0) + " @ " + (Math.abs(x.dc) / Math.abs(x.dq)).toFixed(3);
+      const cls = x.action === "BUY" ? "buy" : x.action === "SELL" ? "sell" : "";
+      return '<tr' + (x.i === i ? ' class="cur"' : "") + "><td>" + x.id + '</td><td class="' + cls + '">' + x.action + (x.reason === "reduce" ? " (reduce)" : "") + '</td><td class="n">' + traded + '</td><td class="n">' + sgn(x.pos, 0) +
+        '</td><td class="n">' + sgn(x.pnlMid, 2) + '</td><td class="n">' + sgn(x.pnlTheo, 2) + "</td></tr>";
+    }).join("") + "</tbody></table>";
+  pn.scrollTop = pn.scrollHeight;
+}
+
+function select(i) {
+  current = i;
+  document.querySelectorAll(".tab").forEach((t, k) => {
+    t.setAttribute("aria-selected", k === i ? "true" : "false");
+    t.tabIndex = k === i ? 0 : -1;
+  });
+  $("#prev").disabled = i === 0;
+  $("#next").disabled = i === BOOKS.length - 1;
+  const sel = $("#tab-" + i);
+  const box = tabsEl.getBoundingClientRect(), tb = sel.getBoundingClientRect();
+  if (tb.left < box.left || tb.right > box.right) tabsEl.scrollLeft += (tb.left + tb.width / 2) - (box.left + box.width / 2);
+  renderBook(i); renderChart(i); renderTrades(i); renderSim(i);
+}
+
+let lastW = 0;
+new ResizeObserver(() => {
+  const w = $("#chart").clientWidth;
+  if (w !== lastW) { lastW = w; renderChart(current); }
+}).observe($("#chart"));
+document.querySelectorAll("#lagbar button").forEach(btn => btn.addEventListener("click", () => { LAG = Number(btn.dataset.lag); renderSim(current); }));
+new ResizeObserver(() => renderSim(current)).observe($("#pred-chart"));
+new ResizeObserver(() => renderSim(current)).observe($("#pnl-chart"));
+select(0);
+</script>
+</body>
+</html>
